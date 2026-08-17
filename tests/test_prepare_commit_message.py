@@ -2,7 +2,13 @@ from pathlib import Path
 
 import pytest
 
-from git_commit_texter import SuccessfulDraft, prepare_commit_message
+from git_commit_texter import (
+    LlmFailure,
+    LlmFailureKind,
+    SuccessfulDraft,
+    TooEarlyJudgement,
+    prepare_commit_message,
+)
 
 GIT_HELP = """\
 # Please enter the commit message for your changes. Lines starting
@@ -109,6 +115,18 @@ chore(deps): bump requests to 2.32.0
 #
 """
 
+SEMANTIC_TOO_EARLY_EDITOR = """\
+# Too early: unfinished slice of a feature
+
+# Please enter the commit message for your changes. Lines starting
+# with '#' will be ignored, and an empty message aborts the commit.
+#
+# On branch main
+# Changes to be committed:
+#	modified:   src/fetch.py
+#
+"""
+
 
 class FakeGit:
     def __init__(self, staged_diff: str) -> None:
@@ -121,11 +139,15 @@ class FakeGit:
 
 
 class FakeLlm:
-    def __init__(self, reply: SuccessfulDraft) -> None:
+    def __init__(
+        self, reply: SuccessfulDraft | TooEarlyJudgement | LlmFailure
+    ) -> None:
         self._reply = reply
         self.received_diffs: list[str] = []
 
-    def draft(self, staged_diff: str) -> SuccessfulDraft:
+    def draft(
+        self, staged_diff: str
+    ) -> SuccessfulDraft | TooEarlyJudgement | LlmFailure:
         self.received_diffs.append(staged_diff)
         return self._reply
 
@@ -220,6 +242,47 @@ def test_empty_index_writes_error_and_does_not_call_llm(tmp_path: Path) -> None:
     assert editor.read_text() == EMPTY_INDEX_EDITOR
     assert git.staged_diff_calls == 1
     assert llm.received_diffs == []
+
+
+@pytest.mark.parametrize(
+    ("kind", "comment"),
+    [
+        ("timeout", "# Error: LLM timed out"),
+        ("unreachable", "# Error: LLM unreachable"),
+        ("context_too_large", "# Error: staged diff exceeds model context"),
+        ("unusable", "# Error: unusable model output"),
+    ],
+)
+def test_llm_failure_writes_error_and_empty_placeholder(
+    tmp_path: Path, kind: LlmFailureKind, comment: str
+) -> None:
+    editor = tmp_path / "COMMIT_EDITMSG"
+    editor.write_text("\n" + GIT_HELP)
+
+    git = FakeGit(STAGED_DIFF)
+    llm = FakeLlm(LlmFailure(kind=kind))
+
+    result = prepare_commit_message(editor, git, llm)
+
+    assert result == 0
+    assert editor.read_text() == f"{comment}\n\n{GIT_HELP}"
+    assert git.staged_diff_calls == 1
+    assert llm.received_diffs == [STAGED_DIFF]
+
+
+def test_semantic_too_early_writes_reason_and_empty_placeholder(tmp_path: Path) -> None:
+    editor = tmp_path / "COMMIT_EDITMSG"
+    editor.write_text("\n" + GIT_HELP)
+
+    git = FakeGit(STAGED_DIFF)
+    llm = FakeLlm(TooEarlyJudgement(reason="unfinished slice of a feature"))
+
+    result = prepare_commit_message(editor, git, llm)
+
+    assert result == 0
+    assert editor.read_text() == SEMANTIC_TOO_EARLY_EDITOR
+    assert git.staged_diff_calls == 1
+    assert llm.received_diffs == [STAGED_DIFF]
 
 
 def test_lockfile_only_diff_still_calls_llm(tmp_path: Path) -> None:

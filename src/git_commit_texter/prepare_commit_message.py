@@ -2,9 +2,21 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Protocol
+from typing import Literal, Protocol
 
 _SKIP_SOURCES = frozenset({"message", "merge", "squash", "commit"})
+LlmFailureKind = Literal[
+    "timeout",
+    "unreachable",
+    "context_too_large",
+    "unusable",
+]
+_ERROR_COMMENTS: dict[LlmFailureKind, str] = {
+    "timeout": "# Error: LLM timed out",
+    "unreachable": "# Error: LLM unreachable",
+    "context_too_large": "# Error: staged diff exceeds model context",
+    "unusable": "# Error: unusable model output",
+}
 
 
 @dataclass(frozen=True)
@@ -13,12 +25,24 @@ class SuccessfulDraft:
     steps: tuple[str, ...]
 
 
+@dataclass(frozen=True)
+class TooEarlyJudgement:
+    reason: str
+
+
+@dataclass(frozen=True)
+class LlmFailure:
+    kind: LlmFailureKind
+
+
 class GitAdapter(Protocol):
     def staged_diff(self) -> str: ...
 
 
 class LlmAdapter(Protocol):
-    def draft(self, staged_diff: str) -> SuccessfulDraft: ...
+    def draft(
+        self, staged_diff: str
+    ) -> SuccessfulDraft | TooEarlyJudgement | LlmFailure: ...
 
 
 def prepare_commit_message(
@@ -40,8 +64,17 @@ def prepare_commit_message(
             _render_comment("# Too early: staged diff is whitespace-only", git_help)
         )
         return 0
-    draft = llm.draft(staged_diff)
-    editor_file.write_text(_render_success(draft, git_help))
+    match llm.draft(staged_diff):
+        case TooEarlyJudgement(reason=reason):
+            editor_file.write_text(
+                _render_comment(f"# Too early: {reason}", git_help)
+            )
+        case LlmFailure(kind=kind):
+            editor_file.write_text(
+                _render_comment(_ERROR_COMMENTS[kind], git_help)
+            )
+        case SuccessfulDraft() as draft:
+            editor_file.write_text(_render_success(draft, git_help))
     return 0
 
 
