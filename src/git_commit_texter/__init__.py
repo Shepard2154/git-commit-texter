@@ -6,6 +6,7 @@ from git_commit_texter.config import (
     resolve_runtime_config,
 )
 from git_commit_texter.git import StagedDiffGit
+from git_commit_texter.llm import OllamaLlm
 from git_commit_texter.prepare_commit_message import (
     GitAdapter,
     LlmAdapter,
@@ -21,6 +22,7 @@ __all__ = [
     "LlmAdapter",
     "LlmFailure",
     "LlmFailureKind",
+    "OllamaLlm",
     "RuntimeConfig",
     "StagedDiffGit",
     "SuccessfulDraft",
